@@ -2,7 +2,7 @@ const express = require("express");
 const router = express.Router();
 const User = require("../models/User");
 const ChatMessage = require("../models/ChatMessage");
-const state = require("../socket/StateManager");
+const state = require("../socket/stateManager");
 
 /* ─────────────────────────────────────────
    GET /api/users/online

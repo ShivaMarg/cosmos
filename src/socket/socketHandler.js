@@ -22,7 +22,7 @@
 
 const User = require("../models/User");
 const ChatMessage = require("../models/ChatMessage");
-const state = require("./StateManager/User");
+const state = require("./stateManager/User");
 
 const PROXIMITY_RADIUS = Number(process.env.PROXIMITY_RADIUS) || 160;
 
