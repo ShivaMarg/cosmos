@@ -10,7 +10,7 @@ const morgan = require("morgan");
 const connectDB = require("./config/db");
 const apiRoutes = require("./routes/api");
 const registerSocketHandlers = require("./socket/socketHandler");
-const { rateLimiter } = require("./middleware/rateLimiter");
+const { rateLimiter } = require("../ratelimiter");
 
 /* ─────────────────────────────────────────
    App setup
