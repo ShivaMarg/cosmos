@@ -4,14 +4,14 @@
  * Events (client → server):
  *   cosmos:join        { userId, name, color, position }
  *   cosmos:move        { x, y }
- *   cosmos:proximity   { nearbyIds: string[] }   // client-driven detection
+ *   cosmos:proximity   { entered: string[], exited: string[] }
  *   cosmos:message     { roomId, text }
  *   cosmos:disconnect  (built-in socket event)
  *
  * Events (server → client):
  *   cosmos:welcome     { user, onlineUsers[] }           to the joiner
  *   cosmos:user_joined { user }                          to everyone else
- *   cosmos:user_moved  { userId, position }              to everyone
+ *   cosmos:user_moved  { userId, x, y }                 to everyone  ← flat x/y now
  *   cosmos:connected   { roomId, peer }                  to both peers
  *   cosmos:disconnected{ roomId, peerId }                to both peers
  *   cosmos:message     { roomId, message }               to room participants
@@ -23,8 +23,6 @@
 const User = require("../models/User");
 const ChatMessage = require("../models/ChatMessage");
 const state = require("./stateManager");
-
-const PROXIMITY_RADIUS = Number(process.env.PROXIMITY_RADIUS) || 160;
 
 module.exports = function registerSocketHandlers(io) {
   io.on("connection", (socket) => {
@@ -39,39 +37,47 @@ module.exports = function registerSocketHandlers(io) {
       try {
         currentUserId = userId;
 
+        const safeName  = sanitize(name, 24);
+        const safeColor = sanitizeColor(color);
+        const safePos   = sanitizePosition(position);
+
         // 1. Upsert in MongoDB
         await User.upsertOnJoin({
           userId,
-          name: sanitize(name, 24),
-          color: sanitizeColor(color),
+          name: safeName,
+          color: safeColor,
           socketId: socket.id,
-          position,
+          position: safePos,
         });
 
-        // 2. Register in hot state
+        // 2. Register in hot state — store x/y flat for easy access
         state.addUser({
           userId,
           socketId: socket.id,
-          name: sanitize(name, 24),
-          color: sanitizeColor(color),
-          position,
+          name: safeName,
+          color: safeColor,
+          x: safePos.x,
+          y: safePos.y,
         });
 
         const me = state.getUser(userId);
 
         // 3. Tell the joiner about every other online user
+        //    Send position as both flat (x,y) and nested for compatibility
         socket.emit("cosmos:welcome", {
           user: me,
-          onlineUsers: state.getAllUsers().filter((u) => u.userId !== userId),
+          onlineUsers: state.getAllUsers()
+            .filter((u) => u.userId !== userId)
+            .map(flatUser),
         });
 
         // 4. Tell everyone else about the new joiner
-        socket.broadcast.emit("cosmos:user_joined", { user: me });
+        socket.broadcast.emit("cosmos:user_joined", { user: flatUser(me) });
 
         // 5. Broadcast updated count
         io.emit("cosmos:online_count", { count: state.onlineCount() });
 
-        console.log(`[Join] ${name} (${userId})`);
+        console.log(`[Join] ${safeName} (${userId})`);
       } catch (err) {
         console.error("[cosmos:join] Error:", err.message);
         socket.emit("cosmos:error", { message: "Failed to join. Please retry." });
@@ -84,38 +90,35 @@ module.exports = function registerSocketHandlers(io) {
     socket.on("cosmos:move", ({ x, y }) => {
       if (!currentUserId) return;
 
-      // Clamp to world bounds
       const clampedX = Math.max(0, Math.min(2000, Number(x) || 0));
       const clampedY = Math.max(0, Math.min(1600, Number(y) || 0));
 
+      // Update hot state with flat x/y
       state.updatePosition(currentUserId, { x: clampedX, y: clampedY });
 
-      // Broadcast position to all other clients
+      // Broadcast flat x/y so client can do:  otherUsers[id].x = x; otherUsers[id].y = y;
       socket.broadcast.emit("cosmos:user_moved", {
         userId: currentUserId,
-        position: { x: clampedX, y: clampedY },
+        x: clampedX,
+        y: clampedY,
       });
     });
 
     /* ─────────────────────────────────────────
-       PROXIMITY  (client reports who is nearby)
-       The client runs its own distance check and
-       tells the server which users just entered /
-       exited its radius.  The server validates,
-       opens/closes rooms, and notifies both peers.
+       PROXIMITY  (client reports who entered / exited)
     ───────────────────────────────────────── */
     socket.on("cosmos:proximity", async ({ entered = [], exited = [] }) => {
       if (!currentUserId) return;
 
       // ── ENTERED proximity ──
       for (const peerId of entered) {
-        if (!state.getUser(peerId)) continue;            // peer not online
-        if (state.roomExists(currentUserId, peerId)) continue; // already connected
+        if (!state.getUser(peerId)) continue;
+        if (state.roomExists(currentUserId, peerId)) continue;
 
         const { roomId, created } = state.openRoom(currentUserId, peerId);
         if (!created) continue;
 
-        const me = state.getUser(currentUserId);
+        const me   = state.getUser(currentUserId);
         const peer = state.getUser(peerId);
 
         // Notify both sides
@@ -161,7 +164,7 @@ module.exports = function registerSocketHandlers(io) {
           }
         }
 
-        // Persist session-end marker on most recent messages in this room
+        // Mark session ended on persisted messages
         await ChatMessage.updateMany(
           { roomId, sessionEnded: false },
           { $set: { sessionEnded: true } }
@@ -170,16 +173,16 @@ module.exports = function registerSocketHandlers(io) {
         console.log(`[Proximity] Disconnected: ${currentUserId} ↔ ${peerId}`);
       }
 
-      // Persist updated position + connections to DB (debounced via MongoDB upsert)
+      // Persist updated position + connections to DB
       const user = state.getUser(currentUserId);
       if (user) {
         User.findOneAndUpdate(
           { userId: currentUserId },
           {
             $set: {
-              position: user.position,
+              position: { x: user.x, y: user.y },
               lastSeen: new Date(),
-              activeConnections: Array.from(user.connections).map((id) => ({
+              activeConnections: Array.from(user.connections || []).map((id) => ({
                 userId: id,
                 connectedAt: new Date(),
               })),
@@ -199,7 +202,7 @@ module.exports = function registerSocketHandlers(io) {
       const trimmed = text.trim().slice(0, 1000);
       if (!trimmed) return;
 
-      // Validate the room — both participants must be online and connected
+      // Validate room — sender must be a participant and room must be active
       const [idA, idB] = roomId.split(":::");
       if (idA !== currentUserId && idB !== currentUserId) {
         return socket.emit("cosmos:error", { message: "Not a participant of this room." });
@@ -240,7 +243,7 @@ module.exports = function registerSocketHandlers(io) {
 
       // 3. Deliver to peer
       const peerId = idA === currentUserId ? idB : idA;
-      const peer = state.getUser(peerId);
+      const peer   = state.getUser(peerId);
       if (peer) {
         const peerSocket = io.sockets.sockets.get(peer.socketId);
         if (peerSocket) peerSocket.emit("cosmos:message", payload);
@@ -254,7 +257,7 @@ module.exports = function registerSocketHandlers(io) {
       if (!currentUserId) return;
       console.log(`[Disconnect] ${currentUserId} — reason: ${reason}`);
 
-      // 1. Get all rooms to close before removing user
+      // 1. Close all rooms and get the list
       const closedRooms = state.removeUser(currentUserId);
 
       // 2. Notify all peers
@@ -275,7 +278,7 @@ module.exports = function registerSocketHandlers(io) {
       io.emit("cosmos:user_left", { userId: currentUserId });
       io.emit("cosmos:online_count", { count: state.onlineCount() });
 
-      // 4. Persist offline status to MongoDB
+      // 4. Persist offline status
       await User.markOffline(currentUserId).catch(() => {});
     });
   });
@@ -285,14 +288,30 @@ module.exports = function registerSocketHandlers(io) {
    Helpers
 ───────────────────────────────────────── */
 
+/** Return a plain user object with flat x/y AND nested position for compatibility */
+function flatUser(u) {
+  return {
+    userId:   u.userId,
+    name:     u.name,
+    color:    u.color,
+    x:        u.x ?? u.position?.x ?? 1000,
+    y:        u.y ?? u.position?.y ?? 800,
+    position: { x: u.x ?? u.position?.x ?? 1000, y: u.y ?? u.position?.y ?? 800 },
+  };
+}
+
 function sanitize(str, maxLen = 100) {
   if (typeof str !== "string") return "Unknown";
   return str.replace(/[<>"']/g, "").trim().slice(0, maxLen) || "Unknown";
 }
 
 function sanitizeColor(color) {
-  if (typeof color === "string" && /^#[0-9a-fA-F]{6}$/.test(color)) {
-    return color;
-  }
+  if (typeof color === "string" && /^#[0-9a-fA-F]{6}$/.test(color)) return color;
   return "#5b7fff";
+}
+
+function sanitizePosition(pos) {
+  const x = Math.max(0, Math.min(2000, Number(pos?.x) || 1000));
+  const y = Math.max(0, Math.min(1600, Number(pos?.y) || 800));
+  return { x, y };
 }

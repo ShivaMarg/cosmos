@@ -480,7 +480,7 @@ function showToast(msg) {
 
 /* ── Socket.IO setup ── */
 function connectSocket() {
-  socket = io(BACKEND_URL, { transports: ['websocket','polling'] });
+  socket = io(BACKEND_URL, { transports: ['polling', 'websocket'] });
 
   const statusEl = document.getElementById('socket-status');
 
