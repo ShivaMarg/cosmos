@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Cosmos — Proximity Chat</title>
+<!-- Socket.IO client -->
+<script src="https://cdn.jsdelivr.net/npm/socket.io-client@4.7.5/dist/socket.io.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+  :root {
+    --bg: #06060e; --bg2: #0d0d1a; --bg3: #12121f; --panel: #0f0f1c;
+    --border: rgba(255,255,255,0.07); --border2: rgba(255,255,255,0.12);
+    --text: #e8e8f0; --text2: #8888a8; --text3: #55556a;
+    --accent: #5b7fff; --accent2: #7c5bff;
+    --green: #3dff9a; --orange: #ff8c3d; --pink: #ff5ba8; --yellow: #f5e642;
+    --radius: 12px; --radius-sm: 8px;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Space Grotesk', sans-serif; background: var(--bg); color: var(--text); height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
+
+  #topbar { height: 48px; background: var(--panel); border-bottom: 1px solid var(--border); display: flex; align-items: center; padding: 0 16px; gap: 12px; flex-shrink: 0; z-index: 100; }
+  #topbar .logo { font-weight: 600; font-size: 15px; letter-spacing: 0.06em; background: linear-gradient(90deg, var(--accent), var(--accent2)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; }
+  #topbar .sep { flex: 1; }
+  #topbar .pill { font-size: 11px; font-family: 'JetBrains Mono', monospace; padding: 3px 10px; border-radius: 20px; border: 1px solid var(--border2); color: var(--text2); letter-spacing: 0.04em; }
+  #topbar .pill.online { border-color: rgba(61,255,154,0.3); color: var(--green); }
+  #connection-badge { font-size: 11px; padding: 3px 10px; border-radius: 20px; background: rgba(91,127,255,0.1); border: 1px solid rgba(91,127,255,0.25); color: var(--accent); font-family: 'JetBrains Mono', monospace; display: flex; align-items: center; gap: 5px; transition: all 0.3s; }
+  #connection-badge.connected { background: rgba(61,255,154,0.1); border-color: rgba(61,255,154,0.3); color: var(--green); }
+  #connection-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--accent); transition: background 0.3s; }
+  #connection-badge.connected .dot { background: var(--green); }
+  #socket-status { font-size: 10px; font-family: 'JetBrains Mono', monospace; padding: 2px 8px; border-radius: 10px; border: 1px solid var(--border); color: var(--text3); }
+  #socket-status.live { border-color: rgba(61,255,154,0.25); color: var(--green); }
+  #socket-status.err  { border-color: rgba(255,60,60,0.3); color: #ff5555; }
+
+  #main { display: flex; flex: 1; overflow: hidden; }
+  #canvas-wrap { flex: 1; position: relative; overflow: hidden; }
+  #cosmos-canvas { width: 100%; height: 100%; cursor: crosshair; }
+
+  #controls-hint { position: absolute; bottom: 16px; left: 50%; transform: translateX(-50%); display: flex; gap: 6px; align-items: center; }
+  .key { font-family: 'JetBrains Mono', monospace; font-size: 11px; padding: 3px 7px; background: var(--bg3); border: 1px solid var(--border2); border-radius: 5px; color: var(--text2); }
+  #controls-hint span { font-size: 11px; color: var(--text3); }
+
+  #right-panel { width: 300px; background: var(--panel); border-left: 1px solid var(--border); display: flex; flex-direction: column; flex-shrink: 0; }
+
+  #nearby-section { padding: 14px 14px 10px; border-bottom: 1px solid var(--border); }
+  #nearby-section h3 { font-size: 10px; font-weight: 500; letter-spacing: 0.1em; color: var(--text3); text-transform: uppercase; margin-bottom: 10px; }
+  #nearby-list { display: flex; flex-direction: column; gap: 6px; min-height: 36px; }
+  .nearby-item { display: flex; align-items: center; gap: 9px; padding: 7px 9px; border-radius: var(--radius-sm); background: var(--bg3); border: 1px solid transparent; transition: all 0.2s; }
+  .nearby-item.connected-user { border-color: rgba(61,255,154,0.2); background: rgba(61,255,154,0.05); }
+  .nearby-avatar { width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; flex-shrink: 0; }
+  .nearby-info { flex: 1; min-width: 0; }
+  .nearby-name { font-size: 12px; font-weight: 500; color: var(--text); }
+  .nearby-dist { font-size: 10px; font-family: 'JetBrains Mono', monospace; color: var(--text3); }
+  .nearby-status { width: 7px; height: 7px; border-radius: 50%; background: var(--text3); flex-shrink: 0; }
+  .nearby-status.in-range { background: var(--green); box-shadow: 0 0 6px rgba(61,255,154,0.5); }
+
+  #chat-section { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+  #chat-header { padding: 12px 14px; border-bottom: 1px solid var(--border); display: flex; align-items: center; gap: 9px; }
+  #chat-header h3 { font-size: 10px; font-weight: 500; letter-spacing: 0.1em; color: var(--text3); text-transform: uppercase; flex: 1; }
+  #chat-with { font-size: 12px; font-weight: 500; color: var(--text); }
+  #chat-messages { flex: 1; overflow-y: auto; padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; scrollbar-width: thin; scrollbar-color: var(--border2) transparent; }
+  #chat-placeholder { margin: auto; text-align: center; }
+  #chat-placeholder .icon { font-size: 28px; margin-bottom: 8px; opacity: 0.3; }
+  #chat-placeholder p { font-size: 12px; color: var(--text3); line-height: 1.5; }
+
+  .msg { display: flex; flex-direction: column; gap: 3px; animation: msgIn 0.2s ease; }
+  @keyframes msgIn { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }
+  .msg.me { align-items: flex-end; }
+  .msg.them { align-items: flex-start; }
+  .msg-meta { font-size: 10px; color: var(--text3); font-family: 'JetBrains Mono', monospace; padding: 0 4px; }
+  .msg-bubble { padding: 7px 11px; border-radius: 10px; font-size: 13px; line-height: 1.45; max-width: 220px; word-break: break-word; }
+  .msg.me .msg-bubble { background: var(--accent); color: #fff; border-bottom-right-radius: 3px; }
+  .msg.them .msg-bubble { background: var(--bg3); border: 1px solid var(--border2); color: var(--text); border-bottom-left-radius: 3px; }
+  .system-msg { text-align: center; font-size: 11px; color: var(--text3); font-family: 'JetBrains Mono', monospace; padding: 2px 8px; animation: msgIn 0.2s ease; }
+  .system-msg span { background: var(--bg3); border: 1px solid var(--border); border-radius: 20px; padding: 2px 8px; display: inline-block; }
+
+  #chat-input-area { padding: 10px 12px; border-top: 1px solid var(--border); display: flex; gap: 8px; align-items: center; }
+  #chat-input { flex: 1; background: var(--bg3); border: 1px solid var(--border2); border-radius: var(--radius-sm); padding: 8px 11px; font-family: 'Space Grotesk', sans-serif; font-size: 13px; color: var(--text); outline: none; transition: border-color 0.2s; }
+  #chat-input:focus { border-color: rgba(91,127,255,0.5); }
+  #chat-input:disabled { opacity: 0.35; cursor: not-allowed; }
+  #chat-input::placeholder { color: var(--text3); }
+  #send-btn { width: 34px; height: 34px; border-radius: var(--radius-sm); background: var(--accent); border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; transition: all 0.15s; flex-shrink: 0; }
+  #send-btn:hover { background: var(--accent2); transform: scale(1.05); }
+  #send-btn:active { transform: scale(0.95); }
+  #send-btn:disabled { opacity: 0.35; cursor: not-allowed; transform: none; }
+  #send-btn svg { width: 16px; height: 16px; fill: none; stroke: white; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+
+  #entry-screen { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; z-index: 999; }
+  .entry-card { width: 360px; background: var(--panel); border: 1px solid var(--border2); border-radius: 20px; padding: 32px; display: flex; flex-direction: column; gap: 20px; }
+  .entry-logo { font-size: 26px; font-weight: 600; letter-spacing: 0.05em; background: linear-gradient(135deg, var(--accent), var(--accent2), var(--pink)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; margin-bottom: 2px; }
+  .entry-desc { font-size: 13px; color: var(--text2); line-height: 1.55; }
+  .entry-field { display: flex; flex-direction: column; gap: 7px; }
+  .entry-field label { font-size: 11px; color: var(--text3); letter-spacing: 0.07em; text-transform: uppercase; }
+  .entry-field input { background: var(--bg3); border: 1px solid var(--border2); border-radius: var(--radius-sm); padding: 10px 13px; font-family: 'Space Grotesk', sans-serif; font-size: 14px; color: var(--text); outline: none; transition: border-color 0.2s; }
+  .entry-field input:focus { border-color: rgba(91,127,255,0.6); }
+  .avatar-picker { display: flex; gap: 8px; flex-wrap: wrap; }
+  .ap-swatch { width: 32px; height: 32px; border-radius: 50%; cursor: pointer; border: 2px solid transparent; transition: all 0.15s; }
+  .ap-swatch:hover { transform: scale(1.1); }
+  .ap-swatch.selected { border-color: white; transform: scale(1.15); }
+  .entry-btn { background: var(--accent); color: white; border: none; border-radius: var(--radius-sm); padding: 12px; font-family: 'Space Grotesk', sans-serif; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.15s; letter-spacing: 0.02em; }
+  .entry-btn:hover { background: var(--accent2); }
+
+  #toast { position: absolute; top: 16px; left: 50%; transform: translateX(-50%) translateY(-60px); background: var(--panel); border: 1px solid var(--border2); border-radius: 20px; padding: 8px 16px; font-size: 12px; color: var(--text); transition: transform 0.35s cubic-bezier(0.34, 1.56, 0.64, 1); pointer-events: none; white-space: nowrap; z-index: 50; display: flex; align-items: center; gap: 7px; }
+  #toast.show { transform: translateX(-50%) translateY(0); }
+  #toast .t-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); }
+  .typing-indicator { display: flex; align-items: center; gap: 3px; padding: 8px 11px; background: var(--bg3); border: 1px solid var(--border2); border-radius: 10px; border-bottom-left-radius: 3px; width: fit-content; }
+  .typing-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--text3); animation: typingBounce 1.4s infinite; }
+  .typing-dot:nth-child(2) { animation-delay: 0.2s; }
+  .typing-dot:nth-child(3) { animation-delay: 0.4s; }
+  @keyframes typingBounce { 0%, 60%, 100% { transform: translateY(0); } 30% { transform: translateY(-5px); } }
+</style>
+</head>
+<body>
+
+<div id="entry-screen">
+  <div class="entry-card">
+    <div>
+      <div class="entry-logo">COSMOS</div>
+      <p class="entry-desc">A proximity-based virtual space. Move close to others to start talking. Drift apart to disconnect.</p>
+    </div>
+    <div class="entry-field">
+      <label>Your Name</label>
+      <input id="entry-name" type="text" placeholder="e.g. Nova, Zeph, Kai..." maxlength="16" autocomplete="off" />
+    </div>
+    <div class="entry-field">
+      <label>Choose Color</label>
+      <div class="avatar-picker" id="avatar-picker">
+        <div class="ap-swatch selected" style="background:#5b7fff" data-color="#5b7fff"></div>
+        <div class="ap-swatch" style="background:#7c5bff" data-color="#7c5bff"></div>
+        <div class="ap-swatch" style="background:#3dff9a" data-color="#3dff9a"></div>
+        <div class="ap-swatch" style="background:#ff5ba8" data-color="#ff5ba8"></div>
+        <div class="ap-swatch" style="background:#ff8c3d" data-color="#ff8c3d"></div>
+        <div class="ap-swatch" style="background:#f5e642" data-color="#f5e642"></div>
+        <div class="ap-swatch" style="background:#3dd4ff" data-color="#3dd4ff"></div>
+        <div class="ap-swatch" style="background:#ff3d3d" data-color="#ff3d3d"></div>
+      </div>
+    </div>
+    <button class="entry-btn" id="entry-btn">Enter Cosmos →</button>
+  </div>
+</div>
+
+<div id="topbar">
+  <span class="logo">COSMOS</span>
+  <div class="sep"></div>
+  <div id="socket-status">connecting…</div>
+  <div id="connection-badge"><div class="dot"></div><span id="connection-text">no connections</span></div>
+  <div class="pill online" id="online-pill">— online</div>
+</div>
+
+<div id="main">
+  <div id="canvas-wrap">
+    <canvas id="cosmos-canvas"></canvas>
+    <div id="controls-hint">
+      <div class="key">W</div><div class="key">A</div><div class="key">S</div><div class="key">D</div>
+      <span>or</span>
+      <div class="key">↑</div><div class="key">←</div><div class="key">↓</div><div class="key">→</div>
+      <span style="margin-left:4px">to move</span>
+    </div>
+    <div id="toast"><div class="t-dot"></div><span id="toast-text">Connected!</span></div>
+  </div>
+  <div id="right-panel">
+    <div id="nearby-section">
+      <h3>Nearby</h3>
+      <div id="nearby-list"><div style="font-size:12px;color:var(--text3);padding:4px 2px">No one nearby yet…</div></div>
+    </div>
+    <div id="chat-section">
+      <div id="chat-header">
+        <h3>Chat</h3>
+        <span id="chat-with" style="display:none"></span>
+      </div>
+      <div id="chat-messages">
+        <div id="chat-placeholder">
+          <div class="icon">◉</div>
+          <p>Move close to another<br>user to start chatting</p>
+        </div>
+      </div>
+      <div id="chat-input-area">
+        <input id="chat-input" type="text" placeholder="Move closer to chat…" disabled autocomplete="off" />
+        <button id="send-btn" disabled>
+          <svg viewBox="0 0 24 24"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ══════════════════════════════════════════
+   CONFIG — change BACKEND_URL to match your server
+══════════════════════════════════════════ */
+const BACKEND_URL = 'http://localhost:3001';
+const WORLD_W = 2000, WORLD_H = 1600;
+const PROXIMITY_RADIUS = 160;
+const SPEED = 3;
+const MOVE_EMIT_INTERVAL = 50;   // ms between position broadcasts (20 fps)
+
+/* ── state ── */
+const canvas = document.getElementById('cosmos-canvas');
+const ctx = canvas.getContext('2d');
+let myPlayer = null;
+let selectedColor = '#5b7fff';
+let camera = { x: 0, y: 0 };
+let keys = {};
+let otherUsers = {};         // userId → { userId, name, color, position }
+let activeRooms = {};        // roomId → { peerId, peerName, peerColor }
+let chatMessages = {};       // roomId → message[]
+let currentRoomId = null;
+let stars = [];
+let particles = [];
+let socket = null;
+let lastMoveEmit = 0;
+
+/* Proximity tracking — detect enter/exit */
+let prevNearby = new Set();
+
+/* ── UUID helper ── */
+function uuid() {
+  return ([1e7]+-1e3+-4e3+-8e3+-1e11).replace(/[018]/g,c=>
+    (c^crypto.getRandomValues(new Uint8Array(1))[0]&15>>c/4).toString(16));
+}
+
+/* ── Canvas ── */
+function resizeCanvas() {
+  const wrap = document.getElementById('canvas-wrap');
+  canvas.width = wrap.clientWidth;
+  canvas.height = wrap.clientHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+
+/* ── Stars ── */
+function initStars() {
+  stars = Array.from({length:300}, () => ({
+    x: Math.random()*WORLD_W, y: Math.random()*WORLD_H,
+    r: Math.random()*1.2+0.3, alpha: Math.random()*0.4+0.1,
+    twinkle: Math.random()*Math.PI*2
+  }));
+}
+
+/* ── Camera ── */
+function updateCamera() {
+  if (!myPlayer) return;
+  camera.x = Math.max(0, Math.min(WORLD_W - canvas.width, myPlayer.x - canvas.width/2));
+  camera.y = Math.max(0, Math.min(WORLD_H - canvas.height, myPlayer.y - canvas.height/2));
+}
+
+/* ── Distance ── */
+function dist(a, b) {
+  return Math.sqrt((a.x-b.x)**2 + (a.y-b.y)**2);
+}
+
+/* ── Draw ── */
+function draw() {
+  if (!myPlayer) return;
+  ctx.clearRect(0,0,canvas.width,canvas.height);
+  ctx.fillStyle = '#06060e';
+  ctx.fillRect(0,0,canvas.width,canvas.height);
+  ctx.save();
+  ctx.translate(-camera.x, -camera.y);
+
+  // Grid
+  ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+  ctx.lineWidth = 0.5;
+  for (let x=0; x<WORLD_W; x+=80) { ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,WORLD_H); ctx.stroke(); }
+  for (let y=0; y<WORLD_H; y+=80) { ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(WORLD_W,y); ctx.stroke(); }
+
+  ctx.strokeStyle = 'rgba(91,127,255,0.15)';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(0,0,WORLD_W,WORLD_H);
+
+  // Stars
+  stars.forEach(s => {
+    s.twinkle += 0.02;
+    ctx.beginPath(); ctx.arc(s.x,s.y,s.r,0,Math.PI*2);
+    ctx.fillStyle = `rgba(255,255,255,${s.alpha+Math.sin(s.twinkle)*0.08})`;
+    ctx.fill();
+  });
+
+  const allUsers = [...Object.values(otherUsers), myPlayer];
+
+  // Connection lines
+  for (const room of Object.values(activeRooms)) {
+    const peer = otherUsers[room.peerId];
+    if (!peer) continue;
+    ctx.beginPath(); ctx.moveTo(myPlayer.x, myPlayer.y); ctx.lineTo(peer.x, peer.y);
+    const g = ctx.createLinearGradient(myPlayer.x,myPlayer.y,peer.x,peer.y);
+    g.addColorStop(0, myPlayer.color+'60'); g.addColorStop(1, peer.color+'60');
+    ctx.strokeStyle = g; ctx.lineWidth = 1.5; ctx.setLineDash([6,6]); ctx.stroke(); ctx.setLineDash([]);
+  }
+
+  // Proximity rings
+  allUsers.forEach(u => {
+    const isMe = u === myPlayer;
+    const inProx = !isMe && dist(myPlayer, u) < PROXIMITY_RADIUS;
+    if (isMe || inProx) {
+      ctx.beginPath(); ctx.arc(u.x,u.y,PROXIMITY_RADIUS,0,Math.PI*2);
+      ctx.strokeStyle = inProx ? 'rgba(61,255,154,0.18)' : 'rgba(91,127,255,0.10)';
+      ctx.lineWidth = 1; ctx.setLineDash([4,8]); ctx.stroke(); ctx.setLineDash([]);
+    }
+  });
+
+  // Avatars
+  allUsers.forEach(u => {
+    const isMe = u === myPlayer;
+    const connected = !isMe && Object.values(activeRooms).some(r => r.peerId === u.userId);
+    const grd = ctx.createRadialGradient(u.x,u.y,0,u.x,u.y,22);
+    grd.addColorStop(0,u.color+'40'); grd.addColorStop(1,'transparent');
+    ctx.beginPath(); ctx.arc(u.x,u.y,22,0,Math.PI*2); ctx.fillStyle=grd; ctx.fill();
+    ctx.beginPath(); ctx.arc(u.x,u.y,16,0,Math.PI*2);
+    ctx.fillStyle = u.color+'cc'; ctx.fill();
+    ctx.strokeStyle = connected ? '#3dff9a' : (isMe ? 'white' : u.color);
+    ctx.lineWidth = isMe ? 2.5 : 1.5; ctx.stroke();
+    ctx.fillStyle = '#fff'; ctx.font = 'bold 11px Space Grotesk,sans-serif';
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.fillText((u.name||'?')[0].toUpperCase(), u.x, u.y);
+    ctx.fillStyle = isMe ? 'white' : (connected ? '#3dff9a' : 'rgba(255,255,255,0.6)');
+    ctx.font = (isMe?'500':'400')+' 11px Space Grotesk,sans-serif';
+    ctx.textBaseline = 'top';
+    ctx.fillText(u.name+(isMe?' (you)':''), u.x, u.y+20);
+  });
+
+  ctx.restore();
+
+  // Particles
+  particles = particles.filter(p=>p.life>0);
+  particles.forEach(p => {
+    ctx.beginPath(); ctx.arc(p.x-camera.x,p.y-camera.y,p.r,0,Math.PI*2);
+    ctx.fillStyle = p.color+Math.floor(p.life*255).toString(16).padStart(2,'0');
+    ctx.fill(); p.x+=p.vx; p.y+=p.vy; p.life-=0.02; p.r*=0.97;
+  });
+}
+
+/* ── Proximity detection ── */
+function checkProximity() {
+  if (!myPlayer) return;
+  const currentNearby = new Set();
+  for (const u of Object.values(otherUsers)) {
+    if (dist(myPlayer, u) < PROXIMITY_RADIUS) currentNearby.add(u.userId);
+  }
+  const entered = [...currentNearby].filter(id => !prevNearby.has(id));
+  const exited  = [...prevNearby].filter(id => !currentNearby.has(id));
+  if (entered.length || exited.length) {
+    socket.emit('cosmos:proximity', { entered, exited });
+  }
+  prevNearby = currentNearby;
+  updateNearbyList(currentNearby);
+}
+
+function updateNearbyList(nearbySet) {
+  const list = document.getElementById('nearby-list');
+  const nearby = Object.values(otherUsers)
+    .filter(u => dist(myPlayer, u) < PROXIMITY_RADIUS * 2.5)
+    .sort((a,b) => dist(myPlayer,a) - dist(myPlayer,b));
+
+  if (!nearby.length) {
+    list.innerHTML = '<div style="font-size:12px;color:var(--text3);padding:4px 2px">No one nearby yet…</div>';
+    return;
+  }
+  const isConn = (uid) => Object.values(activeRooms).some(r=>r.peerId===uid);
+  list.innerHTML = nearby.map(u => {
+    const d = Math.round(dist(myPlayer, u));
+    const inR = nearbySet.has(u.userId);
+    return `<div class="nearby-item ${isConn(u.userId)?'connected-user':''}">
+      <div class="nearby-avatar" style="background:${u.color}22;color:${u.color}">${(u.name||'?')[0]}</div>
+      <div class="nearby-info"><div class="nearby-name">${escHtml(u.name)}</div><div class="nearby-dist">${d}px away</div></div>
+      <div class="nearby-status ${inR?'in-range':''}"></div>
+    </div>`;
+  }).join('');
+}
+
+/* ── Movement ── */
+function handleMovement() {
+  if (!myPlayer) return;
+  if (document.activeElement === document.getElementById('chat-input')) return;
+  if (keys['ArrowUp']||keys['w']||keys['W']) myPlayer.y -= SPEED;
+  if (keys['ArrowDown']||keys['s']||keys['S']) myPlayer.y += SPEED;
+  if (keys['ArrowLeft']||keys['a']||keys['A']) myPlayer.x -= SPEED;
+  if (keys['ArrowRight']||keys['d']||keys['D']) myPlayer.x += SPEED;
+  myPlayer.x = Math.max(20, Math.min(WORLD_W-20, myPlayer.x));
+  myPlayer.y = Math.max(20, Math.min(WORLD_H-20, myPlayer.y));
+}
+
+/* ── Game loop ── */
+let lastProxCheck = 0;
+function loop(t) {
+  handleMovement();
+  updateCamera();
+  draw();
+
+  // Emit move at capped rate
+  if (socket && socket.connected && t - lastMoveEmit > MOVE_EMIT_INTERVAL) {
+    socket.emit('cosmos:move', { x: myPlayer.x, y: myPlayer.y });
+    lastMoveEmit = t;
+  }
+
+  // Check proximity every 200 ms
+  if (t - lastProxCheck > 200) { checkProximity(); lastProxCheck = t; }
+
+  requestAnimationFrame(loop);
+}
+
+/* ── Chat helpers ── */
+function escHtml(t) { return String(t).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+function addSystemMsg(text) {
+  const msgs = document.getElementById('chat-messages');
+  document.getElementById('chat-placeholder')?.remove();
+  const el = document.createElement('div');
+  el.className = 'system-msg';
+  el.innerHTML = `<span>${text}</span>`;
+  msgs.appendChild(el);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function renderMessages(roomId) {
+  const msgs = document.getElementById('chat-messages');
+  document.getElementById('chat-placeholder')?.remove();
+  msgs.innerHTML = '';
+  (chatMessages[roomId]||[]).forEach(m => {
+    const isMe = m.senderId === myPlayer.userId;
+    const el = document.createElement('div');
+    el.className = 'msg ' + (isMe ? 'me' : 'them');
+    const time = new Date(m.createdAt).toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
+    el.innerHTML = `<div class="msg-meta">${escHtml(m.senderName)} · ${time}</div><div class="msg-bubble">${escHtml(m.text)}</div>`;
+    msgs.appendChild(el);
+  });
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+function openChat(roomId, peer) {
+  currentRoomId = roomId;
+  const badge = document.getElementById('connection-badge');
+  badge.classList.add('connected');
+  document.getElementById('connection-text').textContent = 'connected · ' + peer.name;
+  const cw = document.getElementById('chat-with');
+  cw.textContent = peer.name; cw.style.display='block'; cw.style.color=peer.color;
+  document.getElementById('chat-input').disabled = false;
+  document.getElementById('chat-input').placeholder = `Message ${peer.name}…`;
+  document.getElementById('send-btn').disabled = false;
+  renderMessages(roomId);
+  addSystemMsg(`✦ Connected to ${peer.name}`);
+  showToast(`Connected to ${peer.name}!`);
+  // particles
+  for (let i=0; i<12; i++) {
+    const a = Math.random()*Math.PI*2;
+    particles.push({x:myPlayer.x,y:myPlayer.y,vx:Math.cos(a)*(Math.random()*2+1),vy:Math.sin(a)*(Math.random()*2+1),r:Math.random()*3+1,color:'#3dff9a',life:1});
+  }
+}
+
+function closeChat(roomId, peerName) {
+  if (currentRoomId !== roomId) return;
+  currentRoomId = null;
+  document.getElementById('connection-badge').classList.remove('connected');
+  document.getElementById('connection-text').textContent = 'no connections';
+  document.getElementById('chat-with').style.display = 'none';
+  document.getElementById('chat-input').disabled = true;
+  document.getElementById('chat-input').placeholder = 'Move closer to chat…';
+  document.getElementById('send-btn').disabled = true;
+  addSystemMsg(`◌ Disconnected from ${peerName}`);
+  showToast(`Disconnected from ${peerName}`);
+}
+
+function sendMessage() {
+  const input = document.getElementById('chat-input');
+  const text = input.value.trim();
+  if (!text || !currentRoomId) return;
+  input.value = '';
+  socket.emit('cosmos:message', { roomId: currentRoomId, text });
+}
+
+/* ── Toast ── */
+let toastTO;
+function showToast(msg) {
+  const t = document.getElementById('toast');
+  document.getElementById('toast-text').textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastTO);
+  toastTO = setTimeout(()=>t.classList.remove('show'), 2200);
+}
+
+/* ── Socket.IO setup ── */
+function connectSocket() {
+  socket = io(BACKEND_URL, { transports: ['websocket','polling'] });
+
+  const statusEl = document.getElementById('socket-status');
+
+  socket.on('connect', () => {
+    statusEl.textContent = 'live'; statusEl.className = 'live';
+    if (myPlayer) emitJoin();
+  });
+  socket.on('disconnect', () => {
+    statusEl.textContent = 'offline'; statusEl.className = 'err';
+  });
+  socket.on('connect_error', () => {
+    statusEl.textContent = 'error'; statusEl.className = 'err';
+  });
+
+  /* Server → client events */
+
+  socket.on('cosmos:welcome', ({ user, onlineUsers }) => {
+    otherUsers = {};
+    onlineUsers.forEach(u => { otherUsers[u.userId] = u; });
+    document.getElementById('online-pill').textContent = (onlineUsers.length+1)+' online';
+  });
+
+  socket.on('cosmos:user_joined', ({ user }) => {
+    otherUsers[user.userId] = user;
+  });
+
+  socket.on('cosmos:user_moved', ({ userId, position }) => {
+    if (otherUsers[userId]) otherUsers[userId].position = position;
+  });
+
+  socket.on('cosmos:connected', ({ roomId, peer }) => {
+    activeRooms[roomId] = { peerId: peer.userId, peerName: peer.name, peerColor: peer.color };
+    openChat(roomId, peer);
+  });
+
+  socket.on('cosmos:disconnected', ({ roomId, peerId }) => {
+    const room = activeRooms[roomId];
+    const peerName = room ? room.peerName : 'someone';
+    delete activeRooms[roomId];
+    closeChat(roomId, peerName);
+  });
+
+  socket.on('cosmos:history', ({ roomId, messages }) => {
+    chatMessages[roomId] = messages.map(m => ({
+      senderId: m.senderId,
+      senderName: m.senderName,
+      text: m.text,
+      createdAt: m.createdAt,
+    }));
+    if (currentRoomId === roomId) renderMessages(roomId);
+  });
+
+  socket.on('cosmos:message', ({ roomId, message }) => {
+    if (!chatMessages[roomId]) chatMessages[roomId] = [];
+    chatMessages[roomId].push(message);
+    if (currentRoomId === roomId) renderMessages(roomId);
+  });
+
+  socket.on('cosmos:user_left', ({ userId }) => {
+    delete otherUsers[userId];
+  });
+
+  socket.on('cosmos:online_count', ({ count }) => {
+    document.getElementById('online-pill').textContent = count+' online';
+  });
+}
+
+function emitJoin() {
+  socket.emit('cosmos:join', {
+    userId: myPlayer.userId,
+    name: myPlayer.name,
+    color: myPlayer.color,
+    position: { x: myPlayer.x, y: myPlayer.y },
+  });
+}
+
+/* ── UI events ── */
+window.addEventListener('keydown', e => {
+  keys[e.key] = true;
+  if (['ArrowUp','ArrowDown','ArrowLeft','ArrowRight',' '].includes(e.key)) e.preventDefault();
+});
+window.addEventListener('keyup', e => { keys[e.key] = false; });
+
+document.getElementById('chat-input').addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendMessage();
+  e.stopPropagation();
+});
+document.getElementById('send-btn').addEventListener('click', sendMessage);
+
+document.querySelectorAll('.ap-swatch').forEach(sw => {
+  sw.addEventListener('click', () => {
+    document.querySelectorAll('.ap-swatch').forEach(s=>s.classList.remove('selected'));
+    sw.classList.add('selected');
+    selectedColor = sw.dataset.color;
+  });
+});
+
+document.getElementById('entry-btn').addEventListener('click', () => {
+  let name = document.getElementById('entry-name').value.trim() || 'Voyager';
+  initStars();
+
+  myPlayer = {
+    userId: uuid(),
+    name,
+    color: selectedColor,
+    x: WORLD_W/2 + (Math.random()-0.5)*400,
+    y: WORLD_H/2 + (Math.random()-0.5)*400,
+  };
+
+  const es = document.getElementById('entry-screen');
+  es.style.opacity = '0'; es.style.transition = 'opacity 0.4s';
+  setTimeout(()=>es.style.display='none', 400);
+
+  resizeCanvas();
+  updateCamera();
+  connectSocket();
+  requestAnimationFrame(loop);
+});
+
+document.getElementById('entry-name').addEventListener('keydown', e => {
+  if (e.key === 'Enter') document.getElementById('entry-btn').click();
+});
+
+resizeCanvas();
+</script>
+</body>
+</html>
